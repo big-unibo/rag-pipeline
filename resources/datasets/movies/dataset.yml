@@ -1,0 +1,36 @@
+# A corpus file binds a document collection to the questions used to evaluate it.
+# Create one directory per dataset under resources/datasets.
+#
+# Run another corpus without editing the pipeline:
+#   RAG_CORPUS_CONFIG=resources/datasets/movies/dataset.yml docker compose up --build --exit-code-from ci ci
+
+name: neo4j-movies
+
+documents:
+  # Point at the movie documents so local extra files in other datasets do
+  # not accidentally become part of the default benchmark.
+  input_dir: resources/datasets/movies/documents
+  # glob: "Neo4j Movies Teaching Dataset.pdf"
+
+
+questions:
+  # Keep ground_truth short and factual; automatic metrics compare answers to it.
+  inline:
+    - id: q0
+      text: Tell me what you know about Keanu Reeves.
+      ground_truth: Keanu Reeves played Neo in The Matrix.
+    # - id: q1
+    #   text: Who played Neo in The Matrix?
+    #   ground_truth: Keanu Reeves played Neo in The Matrix.
+    # - id: q2
+    #   text: Who directed The Matrix?
+    #   ground_truth: Lana Wachowski and Lilly Wachowski directed The Matrix.
+    # - id: q3
+    #   text: Which movies in the sample dataset feature Keanu Reeves?
+    #   ground_truth: Keanu Reeves appears in The Matrix and The Devil's Advocate.
+    # - id: q4
+    #   text: Who wrote A Few Good Men?
+    #   ground_truth: Aaron Sorkin wrote A Few Good Men.
+    # - id: q5
+    #   text: Which two movies in the sample dataset feature Tom Cruise?
+    #   ground_truth: Tom Cruise appears in Top Gun and A Few Good Men.

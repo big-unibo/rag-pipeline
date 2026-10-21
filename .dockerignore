@@ -1,0 +1,10 @@
+.git
+.github
+.devcontainer
+.venv
+__pycache__
+*.pyc
+outputs
+mlruns
+credentials.yml
+resources/docs copy

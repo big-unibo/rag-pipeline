@@ -1,0 +1,138 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-pipeline-dev
+    command: sleep infinity
+    working_dir: /workspace
+    volumes:
+      # Devcontainer/app edits should sync with the local checkout.
+      # The ci service below intentionally has no volume, so GitHub still tests
+      # the files copied into the image.
+      - .:/workspace
+    environment:
+      PYTHONPATH: /workspace/src
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ragpassword
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+  ci:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rag-pipeline-dev
+    command: python scripts/run.py
+    working_dir: /workspace
+    environment:
+      PYTHONPATH: /workspace/src
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ragpassword
+      OLLAMA_HOST: http://ollama:11434
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+  postgres:
+    build:
+      context: .
+      dockerfile: docker/postgres/Dockerfile
+    image: rag-pipeline-postgres
+    container_name: rag-pipeline-postgres
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.5.0
+    container_name: rag-pipeline-mlflow
+    environment:
+      MLFLOW_SERVER_ALLOWED_HOSTS: mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,127.0.0.1:5000
+      MLFLOW_SERVER_CORS_ALLOWED_ORIGINS: http://localhost:5000,http://127.0.0.1:5000
+    command:
+      - mlflow
+      - server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "5000"
+      - --backend-store-uri
+      - sqlite:////tmp/mlflow.db
+      - --default-artifact-root
+      - /tmp/mlflow-artifacts
+    ports:
+      - "5000:5000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "from urllib.request import urlopen; urlopen('http://localhost:5000/health', timeout=2).read()"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  neo4j:
+    build:
+      context: .
+      dockerfile: docker/neo4j/Dockerfile
+    image: rag-pipeline-neo4j
+    container_name: rag-pipeline-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/ragpassword
+      RAG_NEO4J_PASSWORD: ragpassword
+    command: /load-graph.sh
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p ragpassword 'RETURN 1'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: rag-pipeline-ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

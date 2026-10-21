@@ -1,0 +1,52 @@
+name: RAG pipeline
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free Docker disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Execute the same command used locally
+        run: docker compose up --build --exit-code-from ci ci
+
+      - name: Copy outputs from container
+        run: docker compose cp ci:/workspace/outputs ./outputs
+
+      - name: Show evaluation output
+        run: cat outputs/evaluation.json
+
+      - name: Show CSV output
+        run: head -n 5 outputs/evaluation.csv
+
+      - name: Show retrieved chunks output
+        run: head -n 5 outputs/retrieved_chunks.csv
+
+      - name: Upload evaluation output
+        uses: actions/upload-artifact@v4
+        with:
+          name: rag-pipeline-output
+          path: |
+            outputs/evaluation.json
+            outputs/evaluation.csv
+            outputs/retrieved_chunks.csv
+
+      - name: Tear down containers
+        if: always()
+        run: docker compose down

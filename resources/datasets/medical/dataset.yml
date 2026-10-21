@@ -1,0 +1,20 @@
+name: GraphRAG-Bench-medical
+version: "1"
+
+documents:
+  input_dir: resources/datasets/medical/documents
+  glob: "*.json"
+
+questions:
+  source:
+    kind: file
+    path: resources/datasets/medical/questions.json
+    format: json
+  schema:
+    id: id
+    text: question
+    ground_truth: answer
+  metadata:
+    include:
+      - source
+      - question_type

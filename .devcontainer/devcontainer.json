@@ -1,0 +1,35 @@
+{
+  "name": "rag-pipeline",
+  "dockerComposeFile": "../docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "forwardPorts": ["postgres:5432", "mlflow:5000", "neo4j:7474", "neo4j:7687", "ollama:11434"],
+  "portsAttributes": {
+    "postgres:5432": {
+      "label": "Postgres"
+    },
+    "mlflow:5000": {
+      "label": "MLflow"
+    },
+    "neo4j:7474": {
+      "label": "Neo4j Browser"
+    },
+    "neo4j:7687": {
+      "label": "Neo4j Bolt"
+    },
+    "ollama:11434": {
+      "label": "Ollama"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "mechatroner.rainbow-csv",
+        "tomoki1207.pdf"
+      ]
+    }
+  }
+}

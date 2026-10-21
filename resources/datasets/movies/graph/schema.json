@@ -1,0 +1,119 @@
+{
+  "description": "Teaching schema for a compact Neo4j Movies-style graph used by hybrid RAG.",
+  "entity_extraction": "The default graph_search implementation treats each node alias as a known entity phrase. If a question contains an alias, that alias is matched to the node label and searched over search_properties.",
+  "nodes": [
+    {
+      "label": "Person",
+      "description": "Actor, director, or writer in the movie graph.",
+      "search_properties": ["name"],
+      "aliases": [
+        "Keanu Reeves",
+        "Carrie-Anne Moss",
+        "Laurence Fishburne",
+        "Lana Wachowski",
+        "Lilly Wachowski",
+        "Al Pacino",
+        "Tom Cruise",
+        "Demi Moore",
+        "Jack Nicholson",
+        "Rob Reiner",
+        "Aaron Sorkin"
+      ]
+    },
+    {
+      "label": "Movie",
+      "description": "Movie title with release year and tagline.",
+      "search_properties": ["title", "tagline"],
+      "aliases": [
+        "The Matrix",
+        "The Matrix Reloaded",
+        "The Devil's Advocate",
+        "Cloud Atlas",
+        "A Few Good Men",
+        "Top Gun",
+        "Welcome to the Real World",
+        "Free your mind"
+      ]
+    },
+    {
+      "label": "Genre",
+      "description": "Simple movie genre used for graph filtering and retrieval.",
+      "search_properties": ["name"],
+      "aliases": ["Science Fiction", "Drama", "Legal Drama", "Action"]
+    },
+    {
+      "label": "Document",
+      "description": "Evidence document stored in resources/datasets/movies/documents.",
+      "search_properties": ["path", "title", "description"],
+      "aliases": ["Neo4j Movies Teaching Dataset"]
+    }
+  ],
+  "relationships": [
+    {
+      "type": "ACTED_IN",
+      "from": "Person",
+      "to": "Movie",
+      "description": "A person acted in a movie. The relationship may contain a role property."
+    },
+    {
+      "type": "HAS_ACTOR",
+      "from": "Movie",
+      "to": "Person",
+      "description": "A movie points to an actor. The relationship may contain a role property."
+    },
+    {
+      "type": "DIRECTED",
+      "from": "Person",
+      "to": "Movie",
+      "description": "A person directed a movie."
+    },
+    {
+      "type": "DIRECTED_BY",
+      "from": "Movie",
+      "to": "Person",
+      "description": "A movie points to one of its directors."
+    },
+    {
+      "type": "WROTE",
+      "from": "Person",
+      "to": "Movie",
+      "description": "A person wrote a movie."
+    },
+    {
+      "type": "WRITTEN_BY",
+      "from": "Movie",
+      "to": "Person",
+      "description": "A movie points to one of its writers."
+    },
+    {
+      "type": "IN_GENRE",
+      "from": "Movie",
+      "to": "Genre",
+      "description": "A movie belongs to a genre."
+    },
+    {
+      "type": "SEQUEL",
+      "from": "Movie",
+      "to": "Movie",
+      "description": "A movie points to one of its sequels."
+    },
+    {
+      "type": "HAS_EVIDENCE",
+      "from": "Person",
+      "to": "Document",
+      "description": "A person points to an evidence document in resources/datasets/movies/documents."
+    },
+    {
+      "type": "HAS_EVIDENCE",
+      "from": "Movie",
+      "to": "Document",
+      "description": "A movie points to an evidence document in resources/datasets/movies/documents."
+    },
+    {
+      "type": "HAS_EVIDENCE",
+      "from": "Genre",
+      "to": "Document",
+      "description": "A genre points to an evidence document in resources/datasets/movies/documents."
+    }
+  ]
+}

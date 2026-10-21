@@ -1,0 +1,133 @@
+# Base settings used by every run.
+# Matrix options below override these values.
+
+corpus:
+  # Questions and document locations live outside the pipeline definition.
+  # Swap this file, --corpus, or RAG_CORPUS_CONFIG to evaluate another dataset.
+  path: resources/datasets/movies/dataset.yml
+
+document_loading:
+  # Stage 1: read PDFs; input_dir and glob come from the selected corpus file.
+  strategy: PlainTextPdfLoader
+
+chunking:
+  # Stage 2: split loaded text into chunks.
+  strategy: FixedChunker
+  chunk_size: 1000
+  chunk_overlap: 200
+
+embedding:
+  # Stage 3: embed chunks and questions.
+  # The current database schema has vector(384), so active models must emit 384 dimensions.
+  # Be careful to update the Postgres schema if you change this dimension.
+  strategy: OllamaEmbedder
+  host: http://ollama:11434
+  model: all-minilm
+  dimension: 384
+
+retrieval:
+  # Stage 4a: retrieve chunks from Postgres/pgvector.
+  strategy: PostgresVectorRetriever
+  top_k: 5
+  threshold:
+  chunk_table: chunk_embeddings
+  document_table: documents
+  text_column: text
+  vector_column: pgvector_embedding
+  chunking_model: default
+  host: localhost
+  port: 5432
+  database: rag
+  user: rag
+  password: rag
+
+graph_search:
+  # Stage 4b: symbolic retrieval from Neo4j.
+  # This step takes the question as input and returns RetrievedChunk objects,
+  # exactly like vector search. Each graph result is one matched triple rendered
+  # as chunk text.
+  strategy: Neo4jGraphSearcher
+  uri: bolt://neo4j:7687
+  user: neo4j
+  password: ragpassword
+  schema_path: resources/datasets/movies/graph/schema.json
+  top_k: 5
+  # The selected dataset schema is read and used to extract aliases.
+  # aliases from the question, and builds a simple Cypher query:
+  #   MATCH (entity:MatchedLabel)-[e]->(n)
+  #   WHERE entity.matched_property CONTAINS matched_value
+  #   RETURN entity, e, n
+
+ranking:
+  # Stage 4c: rerank the combined vector chunks and graph-derived items.
+  strategy: OllamaReranker
+  host: http://ollama:11434
+  model: gemma3:270m
+  temperature: 0
+  top_k: 5
+
+prompting:
+  # Stage 5: prompt template from src/rag_pipeline/stages/prompt.py.
+  strategy: BasicPromptBuilder
+  template: strict_cited
+
+answering:
+  # Stage 6: real LLM answering.
+  strategy: OllamaAnswerer
+  host: http://ollama:11434
+  model: gemma3:270m
+  temperature: 0
+  num_predict: 1024
+
+evaluation:
+  # Stage 7: all standard metrics are always evaluated.
+  strategy: BasicEvaluator
+  embedding:
+    strategy: OllamaEmbedder
+    host: http://ollama:11434
+    model: all-minilm
+    dimension: 384
+  host: http://ollama:11434
+  model: gemma3:270m
+  temperature: 0
+  output:
+    json:
+      ignore:
+    csv:
+      ignore:
+        - retrieved_chunks
+
+tracking:
+  # MLflow tracking. Docker overrides tracking_uri to http://mlflow:5000.
+  enabled: true
+  tracking_uri: http://mlflow:5000
+  experiment_name: rag-pipeline
+  run_name: neo4j-movies
+
+execution:
+  # Set index_documents to false when Postgres already contains the needed chunks/vectors.
+  index_documents: true
+  output_json: outputs/evaluation.json
+  output_csv: outputs/evaluation.csv
+  output_run_config_csv: outputs/run_config.csv
+  # Flat table with one row per retrieved chunk, useful for retrieval debugging.
+  output_retrieved_chunks_csv: outputs/retrieved_chunks.csv
+
+matrix:
+  # Every list below is combined as a Cartesian product.
+  # Only dimensions that actually vary belong here.
+
+  evaluation:
+    - name: basic
+      overrides:
+        evaluation:
+          strategy: BasicEvaluator
+          embedding:
+            strategy: OllamaEmbedder
+            host: http://ollama:11434
+            model: all-minilm
+            dimension: 384
+    - name: vRag
+      overrides:
+        evaluation:
+          strategy: VragEvaluator

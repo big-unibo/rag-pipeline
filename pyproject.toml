@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rag-pipeline"
+version = "0.1.0"
+description = "Configurable RAG pipeline experiments."
+requires-python = ">=3.10"
+dependencies = [
+    "langchain_text_splitters",
+    "mlflow",
+    "neo4j",
+    "numpy",
+    "pdfplumber",
+    "psycopg[binary]",
+    "PyYAML",
+    "requests",
+    "SQLAlchemy",
+]
+
+[project.scripts]
+rag-pipeline = "rag_pipeline.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

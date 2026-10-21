@@ -1,0 +1,10 @@
+langchain_text_splitters
+mlflow
+neo4j
+numpy
+pdfplumber
+pymupdf4llm
+psycopg[binary]
+PyYAML
+requests
+SQLAlchemy
