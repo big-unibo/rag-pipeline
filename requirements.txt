@@ -4,6 +4,8 @@ neo4j
 numpy
 pdfplumber
 pymupdf4llm
+docling
+rapidocr
 psycopg[binary]
 PyYAML
 requests
