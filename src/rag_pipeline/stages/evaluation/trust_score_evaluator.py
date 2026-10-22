@@ -127,7 +127,7 @@ class TrustScoreEvaluator(Evaluator):
         response: str,
         references: list[RetrievedChunk],
     ) -> dict[str, Any]:
-        documents = {str(reference.chunk.id): reference.chunk.text for reference in references}
+        documents = {str(reference.rank): reference.chunk.text for reference in references}
         total_claims = total_citations = supported_claims = supported_citations = 0
         details = []
         for sentence in split_sentences(response):
