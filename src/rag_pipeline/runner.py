@@ -220,7 +220,7 @@ def run_one_matrix_item(
             log_run_results(evaluations, indexed_chunks=indexed[key]["chunks"], durations=durations)
 
     return {
-        "run": run_name,
+        "run_approach": run_name,
         "run_id": settings.get("run_id", run_name),
         "run_config": build_run_config(settings, settings.get("run_id", 1)),
         "options": settings.get("matrix_run", {}).get("options", {}),
@@ -264,11 +264,11 @@ def build_run_config(settings: dict[str, Any], run_id: int | str) -> dict[str, A
         "document_loading": ("strategy",),
         "chunking": ("strategy",),
         "embedding": ("strategy", "model"),
-        "retrieval": ("strategy"),
-        "graph_search": ("strategy"),
+        "retrieval": ("strategy",),
+        "graph_search": ("strategy",),
         "ranking": ("strategy", "model"),
         "answering": ("strategy", "model"),
-        "evaluation": ("strategy"),
+        "evaluation": ("strategy",),
     }.items():
         section_config = other.get(section)
         if isinstance(section_config, dict):

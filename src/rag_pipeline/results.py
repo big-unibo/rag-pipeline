@@ -24,8 +24,8 @@ def evaluation_field_preferred() -> list[str]:
     return [
         # Keep the most useful columns first; any new metric/config columns are
         # appended automatically so different runs can add fields safely.
-        "run",
         "run_id",
+        "run_approach",
         "question_id",
         "prompt",
         "answer",
@@ -136,7 +136,6 @@ def append_retrieved_chunks_csv(
 
 def retrieved_chunks_field_preferred() -> list[str]:
     return [
-        "run",
         "run_id",
         "question_id",
         "retrieved_rank",
@@ -156,8 +155,8 @@ def flatten_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for result in results:
         base = {
-            "run": result.get("run"),
             "run_id": result.get("run_id", result.get("run")),
+            "run_approach": result.get("run_approach"),
             "indexed_chunks": result.get("indexed_chunks"),
         }
         base.update(flatten_mapping(result.get("run_config", {}), "run_config"))
@@ -186,8 +185,8 @@ def flatten_retrieved_chunks(results: list[dict[str, Any]]) -> list[dict[str, An
     rows = []
     for result in results:
         base = {
-            "run": result.get("run"),
             "run_id": result.get("run_id", result.get("run")),
+            "run_approach": result.get("run_approach"),
         }
         base.update(flatten_mapping(result.get("run_config", {}), "run_config"))
         base.update(prefix(result.get("options", {}), "option"))

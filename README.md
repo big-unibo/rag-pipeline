@@ -245,3 +245,37 @@ variable control a setting, leave that setting out of the YAML configuration.
 ├── pyproject.toml
 └── requirements.txt
 ```
+
+## Evaluate exported runs
+
+For comparisons that should remain separate from the live pipeline outputs, put
+the semicolon-delimited exports in one directory as `questions.csv`,
+`answers.csv`, and `chunks.csv`, then run. Only the core columns are required;
+additional columns are carried into the corresponding model's metadata:
+
+```bash
+rag-pipeline evaluate-csv --config config/pipeline.yml \
+  --input-dir outputs/input --output-dir outputs/comparison
+```
+
+The evaluator can also be run directly as a module:
+
+```bash
+python -m rag_pipeline.csv_evaluator --config config/pipeline.yml \
+  --input-dir outputs/input --output-dir outputs/comparison
+```
+
+The command loads the `evaluation` section from the pipeline YAML and passes
+each CSV record through the configured evaluation stage using the shared
+`Question`, `Answer`, `Prompt`, `Chunk`, and `RetrievedChunk` models. It joins
+rows by question and by `(run_id, run_approach, question_id)` for chunks. It
+writes:
+
+- `evaluation.csv`: the same flattened evaluation format used by the standard
+  pipeline output logic.
+- `retrieved_chunks.csv`: the same flattened chunk format used by the standard
+  pipeline output logic.
+
+The input filenames can be changed with `--questions`, `--answers`, and
+`--chunks`; no existing files under `outputs/` are appended or overwritten
+unless they are inside the explicit `--output-dir`.

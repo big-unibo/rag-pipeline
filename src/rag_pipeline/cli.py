@@ -28,11 +28,37 @@ def parse_args() -> argparse.Namespace:
     matrix_parser.add_argument("--chunks-csv", default="outputs/retrieved_chunks.csv", help="Retrieved chunks CSV path.")
     matrix_parser.add_argument("--skip-index", action="store_true", help="Use chunks already available in Postgres.")
 
+    csv_parser = subparsers.add_parser(
+        "evaluate-csv", help="Evaluate exported questions, answers, and chunks CSVs."
+    )
+    csv_parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Pipeline YAML containing the evaluation stage configuration.")
+    csv_parser.add_argument("--input-dir", default="outputs/input", help="Directory containing the three input CSVs.")
+    csv_parser.add_argument("--output-dir", default="outputs/comparison", help="Dedicated evaluation output directory.")
+    csv_parser.add_argument("--questions", default="questions.csv")
+    csv_parser.add_argument("--answers", default="answers.csv")
+    csv_parser.add_argument("--chunks", default="chunks.csv")
+
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+
+    if args.command == "evaluate-csv":
+        from rag_pipeline.evaluate_answers import evaluate_csvs
+        from rag_pipeline.settings import load_yaml
+
+        settings = load_yaml(args.config)
+        paths = evaluate_csvs(
+            args.input_dir,
+            args.output_dir,
+            args.questions,
+            args.answers,
+            args.chunks,
+            settings.get("evaluation", {}),
+        )
+        print(json.dumps({key: str(path) for key, path in paths.items()}, indent=2))
+        return
 
     # Import runtime dependencies after argument parsing so "rag-pipeline --help"
     # stays fast and does not load ML/DB libraries.
