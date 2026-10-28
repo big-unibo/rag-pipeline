@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from rag_pipeline.models import Answer, Prompt
 from rag_pipeline.ollama import OllamaClient
+from rag_pipeline.stages.answering.interface import Answerer
 
 
-class OllamaAnswerer:
+class OllamaAnswerer(Answerer):
     def __init__(self, config: dict):
         self.ollama = OllamaClient(config)
         self.model = self.ollama.model

@@ -44,6 +44,28 @@ class OllamaClient:
         response.raise_for_status()
         return response.json()
 
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "options": {"temperature": temperature},
+        }
+        if self.keep_alive is not None:
+            payload["keep_alive"] = self.keep_alive
+        response = self.session.post(
+            f"{self.host}/api/chat",
+            json=payload,
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
@@ -70,6 +92,7 @@ OLLAMA_STAGE_STRATEGIES = frozenset(
     {
         "OllamaEmbedder",
         "OllamaAnswerer",
+        "OllamaChatAnswerer",
         "OllamaReranker",
         "BasicEvaluator",
         "VragEvaluator",

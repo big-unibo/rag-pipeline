@@ -61,6 +61,7 @@ class Prompt:
     context: str
     question: Question
     references: list[RetrievedChunk]
+    messages: list[dict[str, str]] | None = None
 
 
 @dataclass(frozen=True)
