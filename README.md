@@ -261,7 +261,7 @@ rag-pipeline evaluate-csv --config config/pipeline.yml \
 The evaluator can also be run directly as a module:
 
 ```bash
-python -m rag_pipeline.csv_evaluator --config config/pipeline.yml \
+python -m rag_pipeline.evaluate_answers --config config/pipeline.yml \
   --input-dir outputs/input --output-dir outputs/comparison
 ```
 
@@ -277,5 +277,20 @@ writes:
   pipeline output logic.
 
 The input filenames can be changed with `--questions`, `--answers`, and
-`--chunks`; no existing files under `outputs/` are appended or overwritten
-unless they are inside the explicit `--output-dir`.
+`--chunks`; the output files use the same append behavior as the standard
+pipeline output logic.
+
+## Combine and pivot evaluation results
+
+To compare the standard pipeline output with the output produced by
+`evaluate_answers`, run:
+
+```bash
+rag-pipeline compare-evaluations \
+  --pipeline outputs/evaluation.csv \
+  --evaluator outputs/comparison/evaluation.csv
+```
+
+This writes `combined_evaluation.csv`, preserving all columns and adding
+`result_source`, plus `evaluation_pivot.csv`, with metric and timing columns
+split by `run_approach` for each `question_id`.

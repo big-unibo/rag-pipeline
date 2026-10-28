@@ -38,6 +38,14 @@ def parse_args() -> argparse.Namespace:
     csv_parser.add_argument("--answers", default="answers.csv")
     csv_parser.add_argument("--chunks", default="chunks.csv")
 
+    compare_parser = subparsers.add_parser(
+        "compare-evaluations", help="Combine and pivot pipeline evaluation CSVs."
+    )
+    compare_parser.add_argument("--pipeline", required=True, help="Standard pipeline evaluation CSV.")
+    compare_parser.add_argument("--evaluator", required=True, help="evaluate_answers evaluation CSV.")
+    compare_parser.add_argument("--output", default="outputs/comparison/combined_evaluation.csv")
+    compare_parser.add_argument("--pivot-output", default="outputs/comparison/evaluation_pivot.csv")
+
     return parser.parse_args()
 
 
@@ -58,6 +66,14 @@ def main() -> None:
             settings.get("evaluation", {}),
         )
         print(json.dumps({key: str(path) for key, path in paths.items()}, indent=2))
+        return
+
+    if args.command == "compare-evaluations":
+        from rag_pipeline.compare_evaluations import concat_evaluations, pivot_evaluation
+
+        combined = concat_evaluations(args.pipeline, args.evaluator, args.output)
+        pivot_evaluation(combined, args.pivot_output)
+        print(json.dumps({"combined": args.output, "pivot": args.pivot_output}, indent=2))
         return
 
     # Import runtime dependencies after argument parsing so "rag-pipeline --help"

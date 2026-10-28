@@ -119,9 +119,9 @@ def evaluate_csvs(
                 ),
                 similarity=_number(chunk.get("similarity")),
                 score=_number(chunk.get("score")),
-                rank=index,
+                rank=_number(chunk.get("rank")),
             )
-            for index, chunk in enumerate(run_chunks, start=1)
+            for chunk in run_chunks
             for chunk_metadata in [_row_metadata(chunk, CHUNK_COLUMNS)]
         ]
         prompt = Prompt(

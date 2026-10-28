@@ -2,6 +2,7 @@ langchain_text_splitters
 mlflow
 neo4j
 numpy
+pandas
 pdfplumber
 pymupdf4llm
 docling
