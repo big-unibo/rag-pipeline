@@ -39,7 +39,10 @@ def _read_csv(path: Path, expected: set[str]) -> list[dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Input CSV does not exist: {path}")
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter=";")
+        first_line = handle.readline()
+        delimiter = ";" if first_line.count(";") > first_line.count(",") else ","
+        handle.seek(0)
+        reader = csv.DictReader(handle, delimiter=delimiter)
         columns = set(reader.fieldnames or [])
         missing = expected - columns
         if missing:
@@ -72,6 +75,11 @@ def _number(value: str | None) -> float | None:
     except (TypeError, ValueError):
         return None
 
+
+def _rank(value: str | None) -> int | None:
+    number = _number(value)
+    return int(number) if number is not None else None
+
 def evaluate_csvs(
     input_dir: str | Path,
     output_dir: str | Path,
@@ -99,7 +107,12 @@ def evaluate_csvs(
         question = question_by_id.get(answer["question_id"], {})
         run_id = answer["run_id"]
         approach = answer["run_approach"]
-        run_chunks = chunks_by_run_question[(run_id, answer["question_id"])]
+        run_chunks = sorted(
+            chunks_by_run_question[(run_id, answer["question_id"])],
+            key=lambda chunk: _rank(chunk.get("rank"))
+            if _rank(chunk.get("rank")) is not None
+            else float("inf"),
+        )
         execution_times = _json(answer.get("execution_times"))
         question_model = Question(
             id=answer["question_id"],
@@ -119,7 +132,7 @@ def evaluate_csvs(
                 ),
                 similarity=_number(chunk.get("similarity")),
                 score=_number(chunk.get("score")),
-                rank=_number(chunk.get("rank")),
+                rank=_rank(chunk.get("rank")),
             )
             for chunk in run_chunks
             for chunk_metadata in [_row_metadata(chunk, CHUNK_COLUMNS)]

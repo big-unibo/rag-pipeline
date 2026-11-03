@@ -21,9 +21,14 @@ class OllamaChatAnswerer(Answerer):
             prompt.messages,
             temperature=self.temperature,
         )
-        message = body.get("message", {})
+        response_content = body.get("message", {}).get("content", "")
+        try:
+            text = response_content.split('Answer:')[1].strip()
+        except Exception as e:
+            print(f"Error in parsing the answer from the raw LLM QA inference response: {str(e)}!")
+            text = response_content
         return Answer(
-            text=message.get("content", ""),
+            text=text,
             model=self.model,
             prompt=prompt,
             raw_response=body,
