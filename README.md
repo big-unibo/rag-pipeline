@@ -278,7 +278,15 @@ writes:
 
 The input filenames can be changed with `--questions`, `--answers`, and
 `--chunks`; the output files use the same append behavior as the standard
-pipeline output logic.
+pipeline output logic. Results are flushed every 10 answers by default, so a
+later evaluator failure does not remove earlier completed rows. Configure a
+different question batch size with the `--question-batch-size` option or the
+shared `execution.question_batch_size` setting.
+Output appends are idempotent: existing `(run_id, question_id)` evaluations,
+retrieved chunks, and `run_config_id` configurations are not written twice.
+During execution, batches are stored under a hidden temporary directory. The
+final output files are updated only after the complete run succeeds; failed
+runs leave their temporary directory available for recovery.
 
 ## Combine and pivot evaluation results
 

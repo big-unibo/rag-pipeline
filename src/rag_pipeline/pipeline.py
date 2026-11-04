@@ -11,6 +11,7 @@ from sqlalchemy import create_engine, text
 import yaml
 
 from rag_pipeline.models import EmbeddedChunk, Evaluation, Question
+from rag_pipeline.execution import execute_batched
 from rag_pipeline.results import filter_evaluations
 from rag_pipeline.settings import postgres_connection_string, resolve_path
 from rag_pipeline.stages.retrieval import vector_literal
@@ -148,15 +149,22 @@ class RagPipeline:
                 flush=True,
             )
 
-    def run(self) -> list[Evaluation]:
+    def run(
+        self,
+        question_batch_size: int = 1,
+        on_question_batch: Callable[[list[Evaluation]], None] | None = None,
+    ) -> list[Evaluation]:
         # Questions are loaded from the selected corpus so the same pipeline
         # config can be reused across different document collections.
         questions = load_questions(self.settings, self.engine)
-        total = len(questions)
-        return [
-            self.run_question(question, position, total)
-            for position, question in enumerate(questions, start=1)
-        ]
+        return execute_batched(
+            questions,
+            lambda question, position, total: self.run_question(
+                question, position, total
+            ),
+            question_batch_size,
+            on_question_batch,
+        )
 
     def index_documents(self) -> int:
         # This is the offline/indexing path:

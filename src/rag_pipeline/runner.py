@@ -2,40 +2,95 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from pathlib import Path
 from time import perf_counter
 import pandas as pd
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
 from rag_pipeline.mlflow_tracking import log_run_results, log_stage_duration, tracked_run, tracked_stage_run
 from rag_pipeline.ollama import OllamaClient, is_ollama_stage
 from rag_pipeline.pipeline import RagPipeline, serialize_evaluations
-from rag_pipeline.results import (
-    append_results_csv,
-    append_results_json,
-    append_retrieved_chunks_csv,
-    append_run_configs_csv
-)
+from rag_pipeline.results import ResultWriter, TemporaryOutputSession
 from rag_pipeline.settings import expand_matrix, resolve_path
 
 
-def run_matrix(settings: dict[str, Any]) -> list[dict[str, Any]]:
-    runs = expand_matrix(settings)
-    first_run_id = next_run_id(settings)
-    for offset, run_settings in enumerate(runs):
-        run_settings["run_id"] = first_run_id + offset
-    for run_settings in runs:
-        log_execution_config(run_settings)
-    ensure_ollama_models(runs)
+def run_matrix(
+    settings: dict[str, Any],
+    question_batch_size: int | None = None,
+) -> list[dict[str, Any]]:
+    output_csv = settings.get("execution", {}).get("output_csv", "outputs/evaluation.csv")
+    with TemporaryOutputSession(Path(output_csv).parent, ".matrix-") as session:
+        assert session.path is not None
+        on_question_batch = create_matrix_question_batch_writer(settings, session.path)
+        runs = expand_matrix(settings)
+        first_run_id = next_run_id(settings)
+        for offset, run_settings in enumerate(runs):
+            run_settings["run_id"] = first_run_id + offset
+        for run_settings in runs:
+            log_execution_config(run_settings)
+        ensure_ollama_models(runs)
 
-    # Indexing is usually the slowest stage. Cache by the settings that affect
-    # stored chunks/vectors so prompt/evaluation variants do not re-index.
-    indexed: dict[str, dict[str, float | int | None]] = {}
-    should_index = bool(settings.get("execution", {}).get("index_documents", True))
-    return [
-        run_one_matrix_item(run, position, len(runs), should_index, indexed)
-        for position, run in enumerate(runs, start=1)
-    ]
+        # Indexing is usually the slowest stage. Cache by the settings that affect
+        # stored chunks/vectors so prompt/evaluation variants do not re-index.
+        indexed: dict[str, dict[str, float | int | None]] = {}
+        should_index = bool(settings.get("execution", {}).get("index_documents", True))
+        if question_batch_size is None:
+            question_batch_size = settings.get("execution", {}).get("question_batch_size", 10)
+
+        all_results: list[dict[str, Any]] = []
+        for position, run in enumerate(runs, start=1):
+            result = run_one_matrix_item(
+                run,
+                position,
+                len(runs),
+                should_index,
+                indexed,
+                on_question_batch=on_question_batch,
+                question_batch_size=question_batch_size,
+            )
+            all_results.append(result)
+
+        # Only the complete result set is persisted to the final output files.
+        write_matrix_outputs(settings, all_results)
+        return all_results
+
+
+def create_matrix_question_batch_writer(
+    settings: dict[str, Any],
+    temporary_dir: Path,
+) -> Callable[[dict[str, Any]], None]:
+    """Build the internal writer used by matrix execution."""
+    output_config = settings.get("evaluation", {}).get("output", {})
+    writer = ResultWriter(
+        streaming=True,
+        jsonl_path=temporary_dir / "evaluation.jsonl",
+        csv_path=temporary_dir / "evaluation.csv",
+        chunks_csv_path=temporary_dir / "retrieved_chunks.csv",
+        run_config_csv_path=temporary_dir / "run_config.csv",
+        json_ignore=output_config.get("json", {}).get("ignore", []),
+        csv_ignore=output_config.get("csv", {}).get("ignore", []),
+    )
+    written_run_configs: set[str] = set()
+
+    def write_question_batch(result: dict[str, Any]) -> None:
+        evaluation_result = {
+            key: value for key, value in result.items() if key != "run_config"
+        }
+        run_id = str(result.get("run_id"))
+        run_configs = []
+        if run_id not in written_run_configs and "run_config" in result:
+            run_configs = [result["run_config"]]
+            written_run_configs.add(run_id)
+        paths = writer.write_batch([evaluation_result], run_configs)
+        print(
+            f"[run {run_id}] checkpointed question batch "
+            f"({len(result.get('evaluations', []))} questions) to temporary output {paths['detailed']}",
+            flush=True,
+        )
+
+    return write_question_batch
+
 
 def next_run_id(settings: dict[str, Any]) -> int:
     """Return the next persistent integer ID from the run-config history CSV."""
@@ -123,28 +178,59 @@ def write_matrix_outputs(settings: dict[str, Any], results: list[dict[str, Any]]
         for result in results
     ]
     run_configs = [result["run_config"] for result in results if "run_config" in result]
-    json_path = append_results_json(
-        evaluation_results,
-        execution.get("output_json", "outputs/evaluation.json"),
-        output_config.get("json", {}).get("ignore", []),
-    )
-    csv_path = append_results_csv(
-        evaluation_results,
-        execution.get("output_csv", "outputs/evaluation.csv"),
-        output_config.get("csv", {}).get("ignore", []),
-    )
-    run_config_csv_path = append_run_configs_csv(
-        run_configs,
-        execution.get("output_run_config_csv", "outputs/run_config.csv"),
-    )
-    chunks_path = append_retrieved_chunks_csv(
-        evaluation_results,
-        execution.get("output_retrieved_chunks_csv", "outputs/retrieved_chunks.csv"),
-    )
-    print(f"Wrote {json_path}")
-    print(f"Wrote {csv_path}")
-    print(f"Wrote {run_config_csv_path}")
-    print(f"Wrote {chunks_path}")
+    paths = ResultWriter(
+        json_path=execution.get("output_json", "outputs/evaluation.json"),
+        csv_path=execution.get("output_csv", "outputs/evaluation.csv"),
+        chunks_csv_path=execution.get(
+            "output_retrieved_chunks_csv", "outputs/retrieved_chunks.csv"
+        ),
+        run_config_csv_path=execution.get(
+            "output_run_config_csv", "outputs/run_config.csv"
+        ),
+        json_ignore=output_config.get("json", {}).get("ignore", []),
+        csv_ignore=output_config.get("csv", {}).get("ignore", []),
+    ).write_batch(evaluation_results, run_configs)
+    for path in paths.values():
+        print(f"Wrote {path}")
+
+
+def run_single_pipeline(settings: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+    """Run one non-matrix pipeline with the same temporary batch lifecycle."""
+    run_settings = deepcopy(settings)
+    run_id = next_run_id(run_settings)
+    run_name = run_settings.get("tracking", {}).get("run_name", "default")
+    run_settings["run_id"] = run_id
+    run_settings["matrix_run"] = {"name": run_name, "options": {}}
+    question_batch_size = run_settings.get("execution", {}).get("question_batch_size", 10)
+
+    output_csv = run_settings.get("execution", {}).get("output_csv", "outputs/evaluation.csv")
+    with TemporaryOutputSession(Path(output_csv).parent, ".pipeline-") as session:
+        assert session.path is not None
+        on_question_batch = create_matrix_question_batch_writer(run_settings, session.path)
+        total_start = perf_counter()
+        pipeline = RagPipeline(run_settings)
+        evaluations = pipeline.run(
+            question_batch_size=question_batch_size,
+            on_question_batch=lambda batch: _write_question_batch(
+                run_settings, None, batch, on_question_batch
+            ),
+        )
+        duration = perf_counter() - total_start
+        result = {
+            "run_approach": run_name,
+            "run_id": run_id,
+            "run_config": build_run_config(run_settings, run_id),
+            "options": {},
+            "indexed_chunks": None,
+            "durations_seconds": {
+                "run": duration,
+                "question_run": duration,
+                "total": duration,
+            },
+            "evaluations": serialize_evaluations(evaluations),
+        }
+        write_matrix_outputs(run_settings, [result])
+        return evaluations, result
 
 
 def run_one_matrix_item(
@@ -153,6 +239,8 @@ def run_one_matrix_item(
     total: int,
     should_index: bool,
     indexed: dict[str, dict[str, float | int | None]],
+    on_question_batch: Callable[[dict[str, Any]], None],
+    question_batch_size: int = 10,
 ) -> dict[str, Any]:
     run_name = settings.get("matrix_run", {}).get("name", "default")
     key = indexing_key(settings)
@@ -200,12 +288,22 @@ def run_one_matrix_item(
         if mlflow:
             with tracked_stage_run("question_run", run_name):
                 run_start = perf_counter()
-                evaluations = pipeline.run()
+                evaluations = pipeline.run(
+                    question_batch_size=question_batch_size,
+                    on_question_batch=lambda batch: _write_question_batch(
+                        settings, indexed[key]["chunks"], batch, on_question_batch
+                    ),
+                )
                 run_duration = perf_counter() - run_start
                 log_stage_duration("question_run", run_duration, {"evaluation.count": len(evaluations)})
         else:
             run_start = perf_counter()
-            evaluations = pipeline.run()
+            evaluations = pipeline.run(
+                question_batch_size=question_batch_size,
+                on_question_batch=lambda batch: _write_question_batch(
+                    settings, indexed[key]["chunks"], batch, on_question_batch
+                ),
+            )
             run_duration = perf_counter() - run_start
 
         durations = {
@@ -228,6 +326,24 @@ def run_one_matrix_item(
         "durations_seconds": durations,
         "evaluations": serialize_evaluations(evaluations),
     }
+
+
+def _write_question_batch(
+    settings: dict[str, Any],
+    indexed_chunks: int | None,
+    evaluations: list[Any],
+    callback: Callable[[dict[str, Any]], None],
+) -> None:
+    callback(
+        {
+            "run_approach": settings.get("matrix_run", {}).get("name", "default"),
+            "run_id": settings.get("run_id", settings.get("matrix_run", {}).get("name", "default")),
+            "run_config": build_run_config(settings, settings.get("run_id", 1)),
+            "options": settings.get("matrix_run", {}).get("options", {}),
+            "indexed_chunks": indexed_chunks,
+            "evaluations": serialize_evaluations(evaluations),
+        }
+    )
 
 
 def build_run_config(settings: dict[str, Any], run_id: int | str) -> dict[str, Any]:

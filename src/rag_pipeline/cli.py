@@ -23,9 +23,10 @@ def parse_args() -> argparse.Namespace:
     matrix_parser = subparsers.add_parser("matrix", help="Run every configured matrix combination.")
     matrix_parser.add_argument("--config", default=str(DEFAULT_CONFIG), help="Path to a pipeline YAML config.")
     matrix_parser.add_argument("--corpus", "--dataset", dest="corpus", default=None, help="Optional corpus YAML override.")
-    matrix_parser.add_argument("--output", default="outputs/evaluation.json", help="JSON output path.")
-    matrix_parser.add_argument("--csv", default="outputs/evaluation.csv", help="CSV output path.")
-    matrix_parser.add_argument("--chunks-csv", default="outputs/retrieved_chunks.csv", help="Retrieved chunks CSV path.")
+    matrix_parser.add_argument("--output", default=None, help="JSON output path.")
+    matrix_parser.add_argument("--csv", default=None, help="CSV output path.")
+    matrix_parser.add_argument("--chunks-csv", default=None, help="Retrieved chunks CSV path.")
+    matrix_parser.add_argument("--question-batch-size", type=int, default=None, help="Flush output after this many questions.")
     matrix_parser.add_argument("--skip-index", action="store_true", help="Use chunks already available in Postgres.")
 
     csv_parser = subparsers.add_parser(
@@ -37,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     csv_parser.add_argument("--questions", default="questions.csv")
     csv_parser.add_argument("--answers", default="answers.csv")
     csv_parser.add_argument("--chunks", default="chunks.csv")
+    csv_parser.add_argument("--question-batch-size", type=int, default=None, help="Flush evaluator output after this many questions.")
 
     compare_parser = subparsers.add_parser(
         "compare-evaluations", help="Combine and pivot pipeline evaluation CSVs."
@@ -64,6 +66,11 @@ def main() -> None:
             args.answers,
             args.chunks,
             settings.get("evaluation", {}),
+            question_batch_size=(
+                args.question_batch_size
+                if args.question_batch_size is not None
+                else settings.get("execution", {}).get("question_batch_size", 10)
+            ),
         )
         print(json.dumps({key: str(path) for key, path in paths.items()}, indent=2))
         return
@@ -80,8 +87,8 @@ def main() -> None:
     # stays fast and does not load ML/DB libraries.
     from rag_pipeline.pipeline import RagPipeline, serialize_evaluations
     from rag_pipeline.mlflow_tracking import log_run
-    from rag_pipeline.results import filter_results, append_results_csv, append_results_json, append_retrieved_chunks_csv, append_run_configs_csv
-    from rag_pipeline.runner import log_execution_config, run_matrix
+    from rag_pipeline.results import filter_results
+    from rag_pipeline.runner import log_execution_config, run_matrix, run_single_pipeline
     from rag_pipeline.settings import load_settings
 
     settings = load_settings(args.config, args.corpus)
@@ -89,35 +96,40 @@ def main() -> None:
     if args.command == "matrix":
         if args.skip_index:
             settings.setdefault("execution", {})["index_documents"] = False
-        # Matrix mode is the main experiment runner: it expands config options,
-        # tracks runs, and writes JSON/CSV outputs.
-        results = run_matrix(settings)
-        output_config = settings.get("evaluation", {}).get("output", {})
-        json_ignore = output_config.get("json", {}).get("ignore", [])
-        csv_ignore = output_config.get("csv", {}).get("ignore", [])
+        # Matrix mode owns its question-batch writer. The CLI only applies
+        # optional path and batch-size overrides before starting execution.
+        execution = settings.get("execution", {})
+        if args.output is not None:
+            execution["output_json"] = args.output
+        if args.csv is not None:
+            execution["output_csv"] = args.csv
+        if args.chunks_csv is not None:
+            execution["output_retrieved_chunks_csv"] = args.chunks_csv
+        question_batch_size = (
+            args.question_batch_size
+            if args.question_batch_size is not None
+            else execution.get("question_batch_size", 10)
+        )
+
+        results = run_matrix(
+            settings,
+            question_batch_size=question_batch_size,
+        )
+        json_ignore = settings.get("evaluation", {}).get("output", {}).get("json", {}).get("ignore", [])
         print(json.dumps(filter_results(results, json_ignore), indent=2, ensure_ascii=False))
-        evaluation_results = [
-                {key: value for key, value in result.items() if key != "run_config"}
-                for result in results
-            ]
-        run_configs = [result["run_config"] for result in results if "run_config" in result]
-        append_results_json(evaluation_results, args.output, json_ignore)
-        append_results_csv(evaluation_results, args.csv, csv_ignore)
-        append_retrieved_chunks_csv(evaluation_results, args.chunks_csv)
-        append_run_configs_csv(run_configs, settings.get("execution", {}).get("output_run_config_csv", "outputs/run_config.csv"))
         return
 
     log_execution_config(settings)
-    pipeline = RagPipeline(settings)
 
     if args.command == "index":
         # Index-only mode is useful before running many LLM or prompt variants
         # against the same Postgres data.
+        pipeline = RagPipeline(settings)
         indexed = pipeline.index_documents()
         print(json.dumps({"indexed_chunks": indexed}, indent=2))
         return
 
-    evaluations = pipeline.run()
+    evaluations, _ = run_single_pipeline(settings)
     log_run(settings, evaluations)
     output_config = settings.get("evaluation", {}).get("output", {})
     payload = serialize_evaluations(evaluations, output_config.get("json", {}).get("ignore", []))

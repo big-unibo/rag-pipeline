@@ -112,6 +112,8 @@ execution:
   output_run_config_csv: outputs/run_config.csv
   # Flat table with one row per retrieved chunk, useful for retrieval debugging.
   output_retrieved_chunks_csv: outputs/retrieved_chunks.csv
+  # Size of question output write batch
+  question_batch_size: 10
 
 matrix:
   # Every list below is combined as a Cartesian product.

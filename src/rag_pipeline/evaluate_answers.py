@@ -17,10 +17,10 @@ from time import perf_counter
 from typing import Any
 
 from rag_pipeline.models import Answer, Chunk, Evaluation, Prompt, Question, RetrievedChunk
+from rag_pipeline.execution import execute_batched
 from rag_pipeline.results import (
-    append_retrieved_chunks_csv,
-    append_results_csv,
-    filter_results,
+    ResultWriter,
+    TemporaryOutputSession,
 )
 from rag_pipeline.stages.factory import build_stage
 
@@ -80,6 +80,116 @@ def _rank(value: str | None) -> int | None:
     number = _number(value)
     return int(number) if number is not None else None
 
+
+def _chunk_rank(chunk: dict[str, str]) -> int | None:
+    """Accept both evaluator ``rank`` and pipeline ``retrieved_rank`` names."""
+    return _rank(chunk.get("rank") or chunk.get("retrieved_rank"))
+
+
+def _evaluate_answer(
+    answer: dict[str, str],
+    position: int,
+    total: int,
+    question_by_id: dict[str, dict[str, str]],
+    chunks_by_run_question: dict[tuple[str, str], list[dict[str, str]]],
+    evaluator: Any,
+) -> dict[str, Any]:
+    question = question_by_id.get(answer["question_id"], {})
+    run_id = answer["run_id"]
+    approach = answer["run_approach"]
+    run_chunks = sorted(
+        chunks_by_run_question[(run_id, answer["question_id"])],
+        key=lambda chunk: _chunk_rank(chunk)
+        if _chunk_rank(chunk) is not None
+        else float("inf"),
+    )
+    execution_times = _json(answer.get("execution_times"))
+    question_model = Question(
+        id=answer["question_id"],
+        text=question.get("text", ""),
+        ground_truth=question.get("ground_truth") or None,
+        metadata=_row_metadata(question, QUESTION_COLUMNS),
+    )
+    references = [
+        RetrievedChunk(
+            chunk=Chunk(
+                id=chunk["chunk_id"],
+                document_id=chunk["document_id"],
+                text=chunk.get("text", ""),
+                metadata=chunk_metadata,
+            ),
+            similarity=_number(chunk.get("similarity")),
+            score=_number(chunk.get("score")),
+            rank=_chunk_rank(chunk),
+        )
+        for chunk in run_chunks
+        for chunk_metadata in [_row_metadata(chunk, CHUNK_COLUMNS)]
+    ]
+    prompt = Prompt(
+        text=answer.get("prompt_text", ""),
+        context=answer.get("prompt_context", ""),
+        question=question_model,
+        references=references,
+    )
+    answer_model = Answer(
+        text=answer.get("answer_text", ""),
+        model=answer.get("model", ""),
+        prompt=prompt,
+        raw_response={},
+    )
+    print(
+        f"Evaluating answer {position}/{total}: run_id={run_id}, "
+        f"approach={approach}, question_id={question_model.id}"
+    )
+    evaluation_started = perf_counter()
+    try:
+        metrics = evaluator.evaluate(question_model, answer_model)
+    except Exception as exc:  # preserve the failed task in the report
+        metrics = {
+            "evaluation_status": "failed",
+            "evaluation_error": f"{type(exc).__name__}: {exc}",
+        }
+        print(
+            f"[question {question_model.id}] evaluation failed: {metrics['evaluation_error']}",
+            flush=True,
+        )
+    else:
+        metrics = {"evaluation_status": "completed", **metrics}
+    evaluation_time = perf_counter() - evaluation_started
+    evaluation_record = Evaluation(
+        question_id=question_model.id,
+        metrics=metrics,
+        answer=answer_model.text,
+        prompt=prompt.text,
+        ground_truth=question_model.ground_truth,
+        question_metadata=question_model.metadata,
+        answer_metadata={**_row_metadata(answer, ANSWER_COLUMNS), "model": answer_model.model},
+        retrieved_chunks=[
+            {
+                "rank": reference.rank,
+                "document_id": reference.chunk.document_id,
+                "chunk_id": reference.chunk.id,
+                "similarity": reference.similarity,
+                "score": reference.score,
+                "text": reference.chunk.text,
+            }
+            for reference in references
+        ],
+        execution_times={
+            **(execution_times if isinstance(execution_times, dict) else {}),
+            "evaluation": evaluation_time,
+        },
+    )
+    print(
+        f"[question {question_model.id}] complete evaluation in {evaluation_time:.2f}s",
+        flush=True,
+    )
+    return {
+        "run_id": run_id,
+        "run_approach": approach,
+        "evaluations": [asdict(evaluation_record)],
+    }
+
 def evaluate_csvs(
     input_dir: str | Path,
     output_dir: str | Path,
@@ -87,6 +197,33 @@ def evaluate_csvs(
     answers_file: str = "answers.csv",
     chunks_file: str = "chunks.csv",
     evaluation_config: dict[str, Any] | None = None,
+    question_batch_size: int | None = None,
+) -> dict[str, Path]:
+    """Evaluate CSV exports and retain failed temporary runs for recovery."""
+    output_path = Path(output_dir)
+    with TemporaryOutputSession(output_path, ".evaluator-") as session:
+        result = _evaluate_csvs_impl(
+            input_dir,
+            output_path,
+            questions_file,
+            answers_file,
+            chunks_file,
+            evaluation_config,
+            question_batch_size,
+            session.path,
+        )
+        return result
+
+
+def _evaluate_csvs_impl(
+    input_dir: str | Path,
+    output_dir: str | Path,
+    questions_file: str = "questions.csv",
+    answers_file: str = "answers.csv",
+    chunks_file: str = "chunks.csv",
+    evaluation_config: dict[str, Any] | None = None,
+    question_batch_size: int | None = None,
+    temporary_dir: Path | None = None,
 ) -> dict[str, Path]:
     """Evaluate CSV exports through the configured pipeline evaluation stage."""
     input_path = Path(input_dir)
@@ -102,105 +239,45 @@ def evaluate_csvs(
         key = (chunk["run_id"], chunk["question_id"])
         chunks_by_run_question[key].append(chunk)
 
-    evaluation_results: list[dict[str, Any]] = []
-    for i, answer in enumerate(answers):
-        question = question_by_id.get(answer["question_id"], {})
-        run_id = answer["run_id"]
-        approach = answer["run_approach"]
-        run_chunks = sorted(
-            chunks_by_run_question[(run_id, answer["question_id"])],
-            key=lambda chunk: _rank(chunk.get("rank"))
-            if _rank(chunk.get("rank")) is not None
-            else float("inf"),
-        )
-        execution_times = _json(answer.get("execution_times"))
-        question_model = Question(
-            id=answer["question_id"],
-            text=question.get("text", ""),
-            ground_truth=question.get("ground_truth") or None,
-            metadata=_row_metadata(question, QUESTION_COLUMNS),
-        )
-        references = [
-            # The same metadata object is used by Chunk and RetrievedChunk,
-            # matching how metadata travels through the live pipeline.
-            RetrievedChunk(
-                chunk=Chunk(
-                    id=chunk["chunk_id"],
-                    document_id=chunk["document_id"],
-                    text=chunk.get("text", ""),
-                    metadata=chunk_metadata,
-                ),
-                similarity=_number(chunk.get("similarity")),
-                score=_number(chunk.get("score")),
-                rank=_rank(chunk.get("rank")),
-            )
-            for chunk in run_chunks
-            for chunk_metadata in [_row_metadata(chunk, CHUNK_COLUMNS)]
-        ]
-        prompt = Prompt(
-            text=answer.get("prompt_text", ""),
-            context=answer.get("prompt_context", ""),
-            question=question_model,
-            references=references,
-        )
-        answer_model = Answer(
-            text=answer.get("answer_text", ""),
-            model=answer.get("model", ""),
-            prompt=prompt,
-            raw_response={},
-        )
-        print(f"Evaluating answer {i+1}/{len(answers)}: run_id={run_id}, approach={approach}, question_id={question_model.id}")
-        evaluation_started = perf_counter()
-        metrics = evaluator.evaluate(question_model, answer_model)
-        evaluation_time = perf_counter() - evaluation_started
-        evaluation_record = Evaluation(
-            question_id=question_model.id,
-            metrics=metrics,
-            answer=answer_model.text,
-            prompt=prompt.text,
-            ground_truth=question_model.ground_truth,
-            question_metadata=question_model.metadata,
-            answer_metadata={**_row_metadata(answer, ANSWER_COLUMNS), "model": answer_model.model},
-            retrieved_chunks=[
-                {
-                    "rank": reference.rank,
-                    "document_id": reference.chunk.document_id,
-                    "chunk_id": reference.chunk.id,
-                    "similarity": reference.similarity,
-                    "score": reference.score,
-                    "text": reference.chunk.text,
-                }
-                for reference in references
-            ],
-            execution_times={
-                **(execution_times if isinstance(execution_times, dict) else {}),
-                "evaluation": evaluation_time,
-            },
-        )
-        print(
-            f"[question {question_model.id}] complete evaluation in {evaluation_time:.2f}s",
-            flush=True,
-        )
-        evaluation_results.append({
-            "run_id": run_id,
-            "run_approach": approach,
-            "evaluations": [asdict(evaluation_record)],
-        })
-
-    output_path.mkdir(parents=True, exist_ok=True)
-    csv_ignore = (evaluation_config or {}).get("output", {}).get("csv", {}).get("ignore", [])
-    detailed_path = append_results_csv(
-        filter_results(evaluation_results, csv_ignore),
-        output_path / "evaluation.csv",
+    if temporary_dir is None:
+        raise ValueError("temporary_dir is required for evaluator execution")
+    output_settings = (evaluation_config or {}).get("output", {})
+    effective_question_batch_size = question_batch_size if question_batch_size is not None else 10
+    csv_ignore = output_settings.get("csv", {}).get("ignore", [])
+    writer = ResultWriter(
+        streaming=True,
+        jsonl_path=temporary_dir / "evaluation.jsonl",
+        csv_path=temporary_dir / "evaluation.csv",
+        chunks_csv_path=temporary_dir / "retrieved_chunks.csv",
+        csv_ignore=csv_ignore,
     )
-    chunks_path = append_retrieved_chunks_csv(
-        evaluation_results,
-        output_path / "retrieved_chunks.csv",
+    def write_temporary_batch(batch: list[dict[str, Any]]) -> None:
+        writer.write_batch(batch)
+
+    all_evaluation_results = execute_batched(
+        answers,
+        lambda answer, position, total: _evaluate_answer(
+            answer,
+            position,
+            total,
+            question_by_id,
+            chunks_by_run_question,
+            evaluator,
+        ),
+        effective_question_batch_size,
+        write_temporary_batch,
     )
 
+    # Persist complete results only after every answer has been processed.
+    final_writer = ResultWriter(
+        csv_path=output_path / "evaluation.csv",
+        chunks_csv_path=output_path / "retrieved_chunks.csv",
+        csv_ignore=csv_ignore,
+    )
+    final_writer.write_batch(all_evaluation_results)
     return {
-        "detailed": detailed_path,
-        "chunks": chunks_path
+        "detailed": output_path / "evaluation.csv",
+        "chunks": output_path / "retrieved_chunks.csv",
     }
 
 
@@ -214,6 +291,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--questions", default="questions.csv", help="Questions CSV filename.")
     parser.add_argument("--answers", default="answers.csv", help="Answers CSV filename.")
     parser.add_argument("--chunks", default="chunks.csv", help="Retrieved chunks CSV filename.")
+    parser.add_argument("--question-batch-size", type=int, default=None, help="Flush output after this many questions.")
     args = parser.parse_args(argv)
 
     from rag_pipeline.settings import load_yaml
@@ -228,6 +306,11 @@ def main(argv: list[str] | None = None) -> None:
         args.answers,
         args.chunks,
         settings.get("evaluation", {}),
+        question_batch_size=(
+            args.question_batch_size
+            if args.question_batch_size is not None
+            else settings.get("execution", {}).get("question_batch_size")
+        ),
     )
     print(json.dumps({key: str(path) for key, path in paths.items()}, indent=2))
 

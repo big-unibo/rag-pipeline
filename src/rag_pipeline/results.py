@@ -3,8 +3,193 @@ from __future__ import annotations
 import csv
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
+import shutil
+import tempfile
 from typing import Any
+
+
+class ResultBatchWriter:
+    """Append completed result batches while a run is still in progress.
+
+    Each call rewrites the target files with the existing rows plus the new
+    batch. This keeps every output file readable if a later task fails or the
+    process is interrupted.
+    """
+
+    def __init__(
+        self,
+        *,
+        json_path: str | Path | None = None,
+        csv_path: str | Path | None = None,
+        chunks_csv_path: str | Path | None = None,
+        run_config_csv_path: str | Path | None = None,
+        json_ignore: list[str] | None = None,
+        csv_ignore: list[str] | None = None,
+    ) -> None:
+        self.json_path = json_path
+        self.csv_path = csv_path
+        self.chunks_csv_path = chunks_csv_path
+        self.run_config_csv_path = run_config_csv_path
+        self.json_ignore = json_ignore or []
+        self.csv_ignore = csv_ignore or []
+
+    def write_batch(
+        self,
+        results: list[dict[str, Any]],
+        run_configs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Path]:
+        """Persist one completed batch and return the files touched."""
+        paths: dict[str, Path] = {}
+        if self.json_path is not None:
+            paths["json"] = append_results_json(results, self.json_path, self.json_ignore)
+        if self.csv_path is not None:
+            paths["detailed"] = append_results_csv(results, self.csv_path, self.csv_ignore)
+        if self.chunks_csv_path is not None:
+            paths["chunks"] = append_retrieved_chunks_csv(results, self.chunks_csv_path)
+        if self.run_config_csv_path is not None and run_configs:
+            paths["run_config"] = append_run_configs_csv(run_configs, self.run_config_csv_path)
+        return paths
+
+
+class StreamingResultBatchWriter:
+    """Append checkpoints without rereading the complete temporary output."""
+
+    def __init__(
+        self,
+        *,
+        jsonl_path: str | Path | None = None,
+        csv_path: str | Path | None = None,
+        chunks_csv_path: str | Path | None = None,
+        run_config_csv_path: str | Path | None = None,
+        csv_ignore: list[str] | None = None,
+    ) -> None:
+        self.jsonl_path = Path(jsonl_path) if jsonl_path is not None else None
+        self.csv_path = Path(csv_path) if csv_path is not None else None
+        self.chunks_csv_path = Path(chunks_csv_path) if chunks_csv_path is not None else None
+        self.run_config_csv_path = (
+            Path(run_config_csv_path) if run_config_csv_path is not None else None
+        )
+        self.csv_ignore = csv_ignore or []
+
+    def write_batch(
+        self,
+        results: list[dict[str, Any]],
+        run_configs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Path]:
+        paths: dict[str, Path] = {}
+        filtered = filter_results(results, self.csv_ignore)
+        if self.jsonl_path is not None:
+            self._append_jsonl(filtered)
+            paths["json"] = self.jsonl_path
+        if self.csv_path is not None:
+            self._append_csv(
+                self.csv_path,
+                flatten_results(filtered),
+                evaluation_field_preferred(),
+            )
+            paths["detailed"] = self.csv_path
+        if self.chunks_csv_path is not None:
+            self._append_csv(
+                self.chunks_csv_path,
+                flatten_retrieved_chunks(filtered),
+                retrieved_chunks_field_preferred(),
+            )
+            paths["chunks"] = self.chunks_csv_path
+        if self.run_config_csv_path is not None and run_configs:
+            self._append_csv(
+                self.run_config_csv_path,
+                [flatten_mapping(config, "run_config") for config in run_configs],
+                run_config_field_preferred(),
+            )
+            paths["run_config"] = self.run_config_csv_path
+        return paths
+
+    def _append_jsonl(self, results: list[dict[str, Any]]) -> None:
+        assert self.jsonl_path is not None
+        self.jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.jsonl_path.open("a", encoding="utf-8") as handle:
+            for result in results:
+                handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+    def _append_csv(
+        self,
+        path: Path,
+        rows: list[dict[str, Any]],
+        preferred: list[str],
+    ) -> None:
+        if not rows:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing_fields: list[str] = []
+        if path.exists() and path.stat().st_size:
+            with path.open(newline="", encoding="utf-8") as handle:
+                existing_fields = list(csv.DictReader(handle).fieldnames or [])
+        fieldnames = ordered_fieldnames(existing_fields, rows, preferred)
+        if existing_fields and set(fieldnames) == set(existing_fields):
+            with path.open("a", newline="", encoding="utf-8") as handle:
+                csv.DictWriter(handle, fieldnames=fieldnames).writerows(rows)
+            return
+        if not existing_fields:
+            with path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            return
+        # Schema expansion is rare; rewrite only when a new metadata column appears.
+        existing_rows, _ = load_csv_rows(path)
+        write_csv_rows(path, existing_rows + rows, fieldnames)
+
+
+class ResultWriter:
+    """Public writer facade for final and streaming result output."""
+
+    def __init__(self, *, streaming: bool = False, **kwargs: Any) -> None:
+        writer_type = StreamingResultBatchWriter if streaming else ResultBatchWriter
+        if streaming:
+            kwargs["jsonl_path"] = kwargs.pop("json_path", kwargs.get("jsonl_path"))
+        self._writer = writer_type(**kwargs)
+
+    def write_batch(
+        self,
+        results: list[dict[str, Any]],
+        run_configs: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Path]:
+        return self._writer.write_batch(results, run_configs)
+
+
+class TemporaryOutputSession:
+    """Own a temporary run directory and its lifecycle status."""
+
+    def __init__(self, parent: str | Path, prefix: str) -> None:
+        self.parent = Path(parent)
+        self.prefix = prefix
+        self.path: Path | None = None
+
+    def __enter__(self) -> "TemporaryOutputSession":
+        self.parent.mkdir(parents=True, exist_ok=True)
+        self.path = Path(tempfile.mkdtemp(prefix=self.prefix, dir=self.parent))
+        self._write_status("running")
+        return self
+
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: Any) -> bool:
+        if self.path is None:
+            return False
+        if exc is not None:
+            self._write_status("failed", f"{type(exc).__name__}: {exc}")
+            return False
+        self._write_status("completed")
+        shutil.rmtree(self.path)
+        return False
+
+    def _write_status(self, status: str, error: str | None = None) -> None:
+        if self.path is None:
+            return
+        payload: dict[str, Any] = {"status": status}
+        if error:
+            payload["error"] = error
+        _atomic_write_text(self.path / "status.json", json.dumps(payload, indent=2, ensure_ascii=False))
 
 def append_results_json(
     results: list[dict[str, Any]],
@@ -13,10 +198,37 @@ def append_results_json(
 ) -> Path:
     path = Path(json_path)
     existing = load_json_records(path)
+    filtered = filter_results(results, ignore)
+    def key_value(value: Any) -> str:
+        return "" if value is None else str(value)
+
+    seen = {
+        (
+            key_value(record.get("run_id", record.get("run"))),
+            key_value(evaluation.get("question_id")),
+        )
+        for record in existing
+        for evaluation in record.get("evaluations", [])
+    }
+    new_records: list[dict[str, Any]] = []
+    for record in filtered:
+        run_id = record.get("run_id", record.get("run"))
+        normalized_run_id = key_value(run_id)
+        evaluations = [
+            evaluation
+            for evaluation in record.get("evaluations", [])
+            if (normalized_run_id, key_value(evaluation.get("question_id"))) not in seen
+        ]
+        if evaluations:
+            new_records.append({**record, "evaluations": evaluations})
+            seen.update(
+                (normalized_run_id, key_value(evaluation.get("question_id")))
+                for evaluation in evaluations
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(existing + filter_results(results, ignore), indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    _atomic_write_text(
+        path,
+        json.dumps(existing + new_records, indent=2, ensure_ascii=False),
     )
     return path
 
@@ -89,10 +301,75 @@ def ordered_fieldnames(
 
 def write_csv_rows(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    temporary_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            newline="",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = handle.name
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            Path(temporary_path).unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = handle.name
+            handle.write(content)
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            Path(temporary_path).unlink(missing_ok=True)
+
+
+def append_only_new_rows(
+    existing_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+    key_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Keep existing rows and append only rows with unseen business keys."""
+    def normalize(value: Any) -> str:
+        return "" if value is None else str(value)
+
+    seen: set[tuple[str, ...]] = set()
+    rows: list[dict[str, Any]] = []
+    for row in existing_rows:
+        key = tuple(normalize(row.get(field, "")) for field in key_fields)
+        if any(not value for value in key) or key not in seen:
+            rows.append(row)
+            if all(key):
+                seen.add(key)
+    for row in new_rows:
+        key = tuple(normalize(row.get(field, "")) for field in key_fields)
+        if any(not value for value in key):
+            rows.append(row)
+            continue
+        if key not in seen:
+            rows.append(row)
+            seen.add(key)
+    return rows
 
 
 def append_results_csv(
@@ -103,7 +380,7 @@ def append_results_csv(
     path = Path(csv_path)
     new_rows = flatten_results(filter_results(results, ignore))
     existing_rows, existing_fields = load_csv_rows(path)
-    rows = existing_rows + new_rows
+    rows = append_only_new_rows(existing_rows, new_rows, ("run_id", "question_id"))
     fieldnames = ordered_fieldnames(existing_fields, rows, evaluation_field_preferred())
     write_csv_rows(path, rows, fieldnames)
     return path
@@ -115,7 +392,7 @@ def append_run_configs_csv(
     path = Path(csv_path)
     new_rows = [flatten_mapping(config, "run_config") for config in configs]
     existing_rows, existing_fields = load_csv_rows(path)
-    rows = existing_rows + new_rows
+    rows = append_only_new_rows(existing_rows, new_rows, ("run_config_id",))
     fieldnames = ordered_fieldnames(existing_fields, rows, run_config_field_preferred())
     write_csv_rows(path, rows, fieldnames)
     return path
@@ -128,7 +405,11 @@ def append_retrieved_chunks_csv(
     path = Path(csv_path)
     new_rows = flatten_retrieved_chunks(results)
     existing_rows, existing_fields = load_csv_rows(path)
-    rows = existing_rows + new_rows
+    rows = append_only_new_rows(
+        existing_rows,
+        new_rows,
+        ("run_id", "question_id", "retrieved_rank"),
+    )
     fieldnames = ordered_fieldnames(existing_fields, rows, retrieved_chunks_field_preferred())
     write_csv_rows(path, rows, fieldnames)
     return path
