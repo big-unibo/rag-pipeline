@@ -63,6 +63,7 @@ class StreamingResultBatchWriter:
         csv_path: str | Path | None = None,
         chunks_csv_path: str | Path | None = None,
         run_config_csv_path: str | Path | None = None,
+        json_ignore: list[str] | None = None,
         csv_ignore: list[str] | None = None,
     ) -> None:
         self.jsonl_path = Path(jsonl_path) if jsonl_path is not None else None
@@ -71,6 +72,7 @@ class StreamingResultBatchWriter:
         self.run_config_csv_path = (
             Path(run_config_csv_path) if run_config_csv_path is not None else None
         )
+        self.json_ignore = json_ignore or []
         self.csv_ignore = csv_ignore or []
 
     def write_batch(
@@ -79,21 +81,22 @@ class StreamingResultBatchWriter:
         run_configs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Path]:
         paths: dict[str, Path] = {}
-        filtered = filter_results(results, self.csv_ignore)
+        json_results = filter_results(results, self.json_ignore)
+        csv_results = filter_results(results, self.csv_ignore)
         if self.jsonl_path is not None:
-            self._append_jsonl(filtered)
+            self._append_jsonl(json_results)
             paths["json"] = self.jsonl_path
         if self.csv_path is not None:
             self._append_csv(
                 self.csv_path,
-                flatten_results(filtered),
+                flatten_results(csv_results),
                 evaluation_field_preferred(),
             )
             paths["detailed"] = self.csv_path
         if self.chunks_csv_path is not None:
             self._append_csv(
                 self.chunks_csv_path,
-                flatten_retrieved_chunks(filtered),
+                flatten_retrieved_chunks(csv_results),
                 retrieved_chunks_field_preferred(),
             )
             paths["chunks"] = self.chunks_csv_path
