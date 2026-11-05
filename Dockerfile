@@ -12,6 +12,7 @@ RUN python -m pip install --upgrade pip \
 COPY config ./config
 COPY resources ./resources
 COPY scripts ./scripts
+COPY tests ./tests
 
 ENV PYTHONPATH=/workspace/src
 ENV MLFLOW_TRACKING_URI=http://mlflow:5000
