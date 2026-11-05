@@ -30,7 +30,7 @@ jobs:
         run: docker compose cp ci:/workspace/outputs ./outputs
 
       - name: Show evaluation output
-        run: cat outputs/evaluation.json
+        run: ls -la outputs && cat outputs/evaluation.json
 
       - name: Show CSV output
         run: head -n 5 outputs/evaluation.csv
@@ -43,9 +43,7 @@ jobs:
         with:
           name: rag-pipeline-output
           path: |
-            outputs/evaluation.json
-            outputs/evaluation.csv
-            outputs/retrieved_chunks.csv
+            outputs/**
 
       - name: Tear down containers
         if: always()

@@ -38,7 +38,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: rag-pipeline-dev
-    command: python scripts/run.py
+    command: python tests/e2e/test_pipeline.py
     working_dir: /workspace
     environment:
       PYTHONPATH: /workspace/src
