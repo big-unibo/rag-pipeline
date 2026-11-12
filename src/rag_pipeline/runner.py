@@ -197,6 +197,7 @@ def write_matrix_outputs(settings: dict[str, Any], results: list[dict[str, Any]]
 def run_single_pipeline(settings: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
     """Run one non-matrix pipeline with the same temporary batch lifecycle."""
     run_settings = deepcopy(settings)
+    ensure_ollama_models([run_settings])
     run_id = next_run_id(run_settings)
     run_name = run_settings.get("tracking", {}).get("run_name", "default")
     run_settings["run_id"] = run_id
